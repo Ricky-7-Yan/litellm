@@ -43,6 +43,18 @@ const routerWinRate = (direction: ShadowEvalDirection, slice: ShadowEvalSlice): 
 const otherArmWinRate = (direction: ShadowEvalDirection, slice: ShadowEvalSlice): number =>
   direction === "reverse" ? slice.shadow_win_rate_pct : slice.real_win_rate_pct;
 
+const routerArmSpend = (direction: ShadowEvalDirection, results: NonNullable<ShadowEvalJob["results"]>): number =>
+  direction === "reverse" ? results.sampled_real_spend : results.sampled_shadow_spend;
+
+const otherArmSpend = (direction: ShadowEvalDirection, results: NonNullable<ShadowEvalJob["results"]>): number =>
+  direction === "reverse" ? results.sampled_shadow_spend : results.sampled_real_spend;
+
+const routerSliceSpend = (direction: ShadowEvalDirection, slice: ShadowEvalSlice): number =>
+  direction === "reverse" ? slice.real_spend : slice.shadow_spend;
+
+const otherSliceSpend = (direction: ShadowEvalDirection, slice: ShadowEvalSlice): number =>
+  direction === "reverse" ? slice.shadow_spend : slice.real_spend;
+
 const routerMatchedOrBeatPct = (
   direction: ShadowEvalDirection,
   results: NonNullable<ShadowEvalJob["results"]>,
@@ -122,13 +134,19 @@ const SliceTable: React.FC<{
     <TableHeader>
       <TableRow>
         <TableHead>{groupHeader}</TableHead>
-        {["Judged turns", "Router wins", `${otherArmLabel(direction)} wins`, "Ties", "Judge confidence"].map(
-          (label) => (
-            <TableHead key={label} className="text-right">
-              {label}
-            </TableHead>
-          ),
-        )}
+        {[
+          "Judged turns",
+          "Router wins",
+          `${otherArmLabel(direction)} wins`,
+          "Ties",
+          "Judge confidence",
+          "Router cost",
+          `${otherArmLabel(direction)} cost`,
+        ].map((label) => (
+          <TableHead key={label} className="text-right">
+            {label}
+          </TableHead>
+        ))}
       </TableRow>
     </TableHeader>
     <TableBody>
@@ -147,11 +165,53 @@ const SliceTable: React.FC<{
           <TableCell className="text-right tabular-nums">{pct(otherArmWinRate(direction, slice))}</TableCell>
           <TableCell className="text-right tabular-nums">{pct(slice.tie_rate_pct)}</TableCell>
           <TableCell className="text-right tabular-nums">{slice.avg_judge_confidence.toFixed(2)}</TableCell>
+          <TableCell className="text-right tabular-nums">{usd(routerSliceSpend(direction, slice))}</TableCell>
+          <TableCell className="text-right tabular-nums">{usd(otherSliceSpend(direction, slice))}</TableCell>
         </TableRow>
       ))}
     </TableBody>
   </Table>
 );
+
+const CostComparison: React.FC<{
+  direction: ShadowEvalDirection;
+  results: NonNullable<ShadowEvalJob["results"]>;
+  errorCount: number;
+}> = ({ direction, results, errorCount }) => {
+  const routerSpend = routerArmSpend(direction, results);
+  const otherSpend = otherArmSpend(direction, results);
+  if (routerSpend <= 0 && otherSpend <= 0) return null;
+  const savingsPct = otherSpend > 0 ? ((otherSpend - routerSpend) / otherSpend) * 100 : null;
+  const cacheHits = results.by_tier.reduce((sum, slice) => sum + slice.cache_hit_turns, 0);
+  const judged = results.by_tier.reduce((sum, slice) => sum + slice.turn_count, 0);
+  const eligible =
+    results.not_sampled_count != null
+      ? judged + errorCount + results.not_sampled_count + (results.unjudgeable_count ?? 0) + (results.shed_count ?? 0)
+      : null;
+  return (
+    <div className="flex flex-col gap-1 border-b px-6 py-4">
+      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+        Router cost vs {direction === "reverse" ? "the baseline" : "your current model"}
+      </p>
+      <p
+        className={`text-3xl font-semibold ${savingsPct != null && savingsPct > 0 ? "text-success" : "text-foreground"}`}
+      >
+        {savingsPct != null ? `${savingsPct > 0 ? "-" : "+"}${Math.abs(savingsPct).toFixed(1)}%` : "n/a"}
+      </p>
+      <p className="text-xs text-muted-foreground">
+        {usd(routerSpend)} vs {usd(otherSpend)} on the same judged turns, each arm priced as completion plus its own
+        routing classifier{cacheHits > 0 ? `; ${cacheHits.toLocaleString()} cache-served turns excluded` : ""}
+      </p>
+      {eligible != null && (
+        <p className="text-xs text-muted-foreground">
+          Measured on {judged.toLocaleString()} of {eligible.toLocaleString()} eligible requests
+          {(results.shed_count ?? 0) > 0 ? ` (${results.shed_count} dropped under load)` : ""}; projections beyond the
+          sampled slice are extrapolation
+        </p>
+      )}
+    </div>
+  );
+};
 
 const VerdictBar: React.FC<{ direction: ShadowEvalDirection; results: NonNullable<ShadowEvalJob["results"]> }> = ({
   direction,
@@ -276,6 +336,7 @@ const ResultsBody: React.FC<{ job: ShadowEvalJob; resultsError?: boolean }> = ({
               of {(job.judged_count ?? 0).toLocaleString()} judged responses
             </p>
           </div>
+          <CostComparison direction={job.direction} results={results} errorCount={job.error_count ?? 0} />
           <VerdictBar direction={job.direction} results={results} />
           {results.by_current_model.length > 0 && (
             <SliceTable
