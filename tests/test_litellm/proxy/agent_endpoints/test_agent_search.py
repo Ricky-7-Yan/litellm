@@ -157,6 +157,19 @@ class TestAgentSearchIndex:
         ]
 
     @pytest.mark.asyncio
+    async def test_subset_reembed_after_dimension_change_evicts_stale_vectors(self) -> None:
+        index = AgentSearchIndex()
+        await index.search("language translation", AGENTS, top_k=5, embed=FakeEmbedder(), embedding_model="m")
+        narrow = FixedDimensionEmbedder(2)
+        await index.search("language translation", (TRANSLATOR,), top_k=5, embed=narrow, embedding_model="m")
+        broader = FixedDimensionEmbedder(2)
+        outcome = await index.search("language translation", AGENTS, top_k=5, embed=broader, embedding_model="m")
+        assert isinstance(outcome, AgentSearchHits)
+        assert broader.calls == [
+            ("language translation", agent_search_text(SQL_ANALYST), agent_search_text(TRIP_PLANNER)),
+        ]
+
+    @pytest.mark.asyncio
     async def test_mixed_dimensions_in_one_batch_become_embedding_failed(self) -> None:
         async def mixed(texts: Sequence[str]) -> Sequence[Vector]:
             return ((1.0, 0.0), *((1.0, 0.0, 0.0) for _ in texts[1:]))

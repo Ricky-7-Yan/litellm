@@ -199,17 +199,21 @@ class AgentSearchIndex:
         if not agents:
             return AgentSearchHits(hits=())
         texts: Final = tuple(agent_search_text(agent) for agent in agents)
-        cached: Final = self._vectors.get(embedding_model, _NO_VECTORS)
-        embedded: Final = await _embed_query_and_agents(embed, query, texts, cached)
+        embedded: Final = await _embed_query_and_agents(
+            embed, query, texts, self._vectors.get(embedding_model, _NO_VECTORS)
+        )
         if isinstance(embedded, AgentSearchEmbeddingFailed):
             return embedded
         if not _same_dimension(embedded.query_vector, embedded.vectors, texts):
             return AgentSearchEmbeddingFailed(
                 reason=f"embedding model {embedding_model} returned vectors of mixed dimensions"
             )
-        self._vectors = MappingProxyType(
-            {**self._vectors, embedding_model: MappingProxyType({**cached, **embedded.vectors})}
+        current: Final = self._vectors.get(embedding_model, _NO_VECTORS)
+        dim: Final = len(embedded.query_vector)
+        merged: Final = MappingProxyType(
+            {text: vector for text, vector in chain(current.items(), embedded.vectors.items()) if len(vector) == dim}
         )
+        self._vectors = MappingProxyType({**self._vectors, embedding_model: merged})
         ranked: Final = sorted(
             (
                 AgentSearchHit(agent=agent, score=cosine_similarity(embedded.query_vector, embedded.vectors[text]))
