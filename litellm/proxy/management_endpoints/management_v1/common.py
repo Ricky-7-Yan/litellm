@@ -1,5 +1,7 @@
 """Contract machinery shared by every `/management/v1` route."""
 
+from collections.abc import Mapping, MutableMapping
+from types import MappingProxyType
 from typing import Final
 from urllib.parse import urlencode
 
@@ -20,6 +22,20 @@ PROBLEM_CONTENT_TYPE: Final = "application/problem+json"
 # type, and an https URI promises documentation at that address. Switch to an
 # https base only when pages actually exist to serve.
 PROBLEM_TYPE_BASE: Final = "urn:litellm:error:"
+PROBLEM_DETAIL_SCHEMA_NAME: Final = "ProblemDetail"
+PROBLEM_DETAIL_REF: Final = f"#/components/schemas/{PROBLEM_DETAIL_SCHEMA_NAME}"
+
+_PROBLEM_TITLES: Final[Mapping[int, str]] = MappingProxyType(
+    {
+        400: "Invalid query parameter",
+        403: "Forbidden",
+        404: "Not found",
+        409: "Conflict",
+        422: "Invalid request body",
+        500: "Internal server error",
+        503: "Database not connected",
+    }
+)
 
 
 class ManagementProblem(Exception):
@@ -35,6 +51,47 @@ def problem_response(problem: ProblemDetail) -> JSONResponse:
         status_code=problem.status,
         content=problem.model_dump(exclude_none=True),
         media_type=PROBLEM_CONTENT_TYPE,
+    )
+
+
+def add_problem_detail_component(openapi_schema: MutableMapping[str, object]) -> MutableMapping[str, object]:
+    """Register `ProblemDetail` as an OpenAPI component so `problem_responses()` can `$ref` it.
+
+    FastAPI only emits components for models reachable from a route's `response_model`, and a problem
+    document never is one: it is the failure shape, declared out of band.
+    """
+    components: Final = openapi_schema.setdefault("components", {})
+    if not isinstance(components, MutableMapping):
+        return openapi_schema
+    schemas: Final = components.setdefault("schemas", {})
+    if isinstance(schemas, MutableMapping):
+        schemas.setdefault(PROBLEM_DETAIL_SCHEMA_NAME, ProblemDetail.model_json_schema())
+    return openapi_schema
+
+
+def problem_responses(*statuses: int) -> dict[int | str, dict[str, object]]:
+    """OpenAPI `responses=` entries declaring each status as an RFC 9457 problem document.
+
+    Spelled as a raw `$ref` rather than `model=`, because FastAPI renders a `model=` entry under the
+    route's own media type and would document these as `application/json`. A plain `dict` because
+    that is the shape FastAPI's `responses=` parameter is annotated to take.
+    """
+    return {
+        status: {
+            "description": _PROBLEM_TITLES.get(status, "Error"),
+            "content": {PROBLEM_CONTENT_TYPE: {"schema": {"$ref": PROBLEM_DETAIL_REF}}},
+        }
+        for status in statuses
+    }
+
+
+def validation_problem(detail: str) -> ProblemDetail:
+    """A rejected request body, as opposed to `unknown_query_param_problem` for the query string."""
+    return ProblemDetail(
+        type=f"{PROBLEM_TYPE_BASE}invalid-request-body",
+        title=_PROBLEM_TITLES[422],
+        status=422,
+        detail=detail,
     )
 
 
