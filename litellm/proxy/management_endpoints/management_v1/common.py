@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping, MutableMapping
 from types import MappingProxyType
-from typing import Final
+from typing import Final, TypeAlias
 from urllib.parse import urlencode
 
 from fastapi import Request
@@ -54,34 +54,41 @@ def problem_response(problem: ProblemDetail) -> JSONResponse:
     )
 
 
-def add_problem_detail_component(openapi_schema: MutableMapping[str, object]) -> MutableMapping[str, object]:
+def add_problem_detail_component(
+    openapi_schema: MutableMapping[str, object],  # mutable-ok: fastapi's generated schema is a plain nested dict
+) -> None:
     """Register `ProblemDetail` as an OpenAPI component so `problem_responses()` can `$ref` it.
 
     FastAPI only emits components for models reachable from a route's `response_model`, and a problem
     document never is one: it is the failure shape, declared out of band.
     """
-    components: Final = openapi_schema.setdefault("components", {})
+    components: Final = openapi_schema.setdefault("components", {})  # mutable-ok: seeds a branch of fastapi's own dict
     if not isinstance(components, MutableMapping):
-        return openapi_schema
-    schemas: Final = components.setdefault("schemas", {})
+        return
+    schemas: Final = components.setdefault("schemas", {})  # mutable-ok: seeds a branch of fastapi's own dict
     if isinstance(schemas, MutableMapping):
         schemas.setdefault(PROBLEM_DETAIL_SCHEMA_NAME, ProblemDetail.model_json_schema())
-    return openapi_schema
 
 
-def problem_responses(*statuses: int) -> dict[int | str, dict[str, object]]:
+# FastAPI declares `responses=` as a dict of dicts and rewrites copies of the entries as it renders
+# the schema, so every layer below has to be a plain mutable dict.
+ProblemResponses: TypeAlias = dict[int | str, dict[str, object]]  # mutable-ok: fastapi's `responses=` contract
+
+
+def problem_responses(*statuses: int) -> ProblemResponses:
     """OpenAPI `responses=` entries declaring each status as an RFC 9457 problem document.
 
     Spelled as a raw `$ref` rather than `model=`, because FastAPI renders a `model=` entry under the
-    route's own media type and would document these as `application/json`. A plain `dict` because
-    that is the shape FastAPI's `responses=` parameter is annotated to take.
+    route's own media type and would document these as `application/json`.
     """
-    return {
-        status: {
-            "description": _PROBLEM_TITLES.get(status, "Error"),
-            "content": {PROBLEM_CONTENT_TYPE: {"schema": {"$ref": PROBLEM_DETAIL_REF}}},
-        }
-        for status in statuses
+    return {status: _problem_entry(status) for status in statuses}  # mutable-ok: fastapi's `responses=` contract
+
+
+def _problem_entry(status: int) -> dict[str, object]:  # mutable-ok: fastapi's `responses=` contract
+    media_type: Final = {"schema": {"$ref": PROBLEM_DETAIL_REF}}  # mutable-ok: fastapi's `responses=` contract
+    return {  # mutable-ok: fastapi's `responses=` contract
+        "description": _PROBLEM_TITLES.get(status, "Error"),
+        "content": {PROBLEM_CONTENT_TYPE: media_type},  # mutable-ok: fastapi's `responses=` contract
     }
 
 
