@@ -147,6 +147,19 @@ class TestAgentSearchIndex:
         outcome = await AgentSearchIndex().search("q", AGENTS, top_k=5, embed=short)
         assert isinstance(outcome, AgentSearchEmbeddingFailed)
 
+    @pytest.mark.asyncio
+    async def test_dimension_change_invalidates_cached_agent_vectors(self) -> None:
+        index = AgentSearchIndex()
+        warm = FakeEmbedder()
+        await index.search("language translation", AGENTS, top_k=5, embed=warm)
+
+        async def wider(texts: Sequence[str]) -> Sequence[Vector]:
+            return tuple((1.0, 0.0, 0.0, 0.0) for _ in texts)
+
+        outcome = await index.search("language translation", AGENTS, top_k=5, embed=wider)
+        assert isinstance(outcome, AgentSearchHits)
+        assert len(outcome.hits) == len(AGENTS)
+
 
 class TestSearchAgents:
     @pytest.mark.asyncio

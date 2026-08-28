@@ -164,10 +164,24 @@ class AgentSearchIndex:
             return AgentSearchEmbeddingFailed(
                 reason=f"embedding model returned {len(vectors)} vectors for {len(missing) + 1} inputs"
             )
-        self._vectors = MappingProxyType(dict(chain(self._vectors.items(), zip(missing, vectors[1:], strict=True))))
+        query_vector: Final = vectors[0]
+        fresh: Final = dict(zip(missing, vectors[1:], strict=True))
+        kept: Final = {text: vec for text, vec in self._vectors.items() if len(vec) == len(query_vector)}
+        stale: Final = tuple(dict.fromkeys(text for text in texts if text not in kept and text not in fresh))
+        try:
+            refreshed: Final = await embed(stale) if stale else ()
+        except (OpenAIError, ValueError, BudgetExceededError) as exc:
+            return AgentSearchEmbeddingFailed(reason=f"re-embedding stale agent texts failed: {exc}")
+        if len(refreshed) != len(stale):
+            return AgentSearchEmbeddingFailed(
+                reason=f"embedding model returned {len(refreshed)} vectors for {len(stale)} inputs"
+            )
+        self._vectors = MappingProxyType(
+            dict(chain(kept.items(), fresh.items(), zip(stale, refreshed, strict=True)))
+        )
         ranked: Final = sorted(
             (
-                AgentSearchHit(agent=agent, score=cosine_similarity(vectors[0], self._vectors[text]))
+                AgentSearchHit(agent=agent, score=cosine_similarity(query_vector, self._vectors[text]))
                 for agent, text in zip(agents, texts, strict=True)
             ),
             key=lambda hit: hit.score,
